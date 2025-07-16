@@ -11,7 +11,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 	"encoding/base64"
 )
 
@@ -112,74 +111,108 @@ func NewBlockFetcher(d *BTCDaemon, startHeight int, out chan *chain.Block, concu
 func (bf *BlockFetcher) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	tasks := make(chan int, bf.concurrency)
+	pending := make(map[int]*chain.Block)
+	var mu sync.Mutex
+	cond := sync.NewCond(&mu)
+	nextHeight := bf.startHeight
 
+	// Worker goroutines
 	for i := 0; i < bf.concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for height := range tasks {
-				bf.fetchBlock(height)
+				block := bf.fetchBlock(height)
+				if block != nil {
+					mu.Lock()
+					pending[height] = block
+					cond.Signal() // notify waiter
+					mu.Unlock()
+				}
 			}
 		}()
 	}
 
-	height := bf.startHeight
-	for {
-		select {
-		case <-ctx.Done():
-			close(tasks)
-			wg.Wait()
-			return
-		default:
-			tasks <- height
-			height++
-			time.Sleep(10 * time.Millisecond)
+	// Dispatcher: ensures ordered delivery to bf.out
+	go func() {
+		for {
+			mu.Lock()
+			for {
+				// Only proceed if next block is ready or context is done
+				if ctx.Err() != nil {
+					mu.Unlock()
+					return
+				}
+				if blk, ok := pending[nextHeight]; ok {
+					delete(pending, nextHeight)
+					bf.out <- blk
+					nextHeight++
+				} else {
+					break // wait until the next needed block is ready
+				}
+			}
+			cond.Wait()
+			mu.Unlock()
 		}
-	}
+	}()
+
+	// Feed heights to workers
+	go func() {
+		height := bf.startHeight
+		for {
+			select {
+			case <-ctx.Done():
+				close(tasks)
+				wg.Wait()
+				return
+			default:
+				tasks <- height
+				height++
+			}
+		}
+	}()
 }
 
-func (bf *BlockFetcher) fetchBlock(height int) {
+
+func (bf *BlockFetcher) fetchBlock(height int) *chain.Block {
 	hashData, err := bf.daemon.Call("getblockhash", []interface{}{height})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[fetchBlock] getblockhash failed for height %d: %v\n", height, err)
-		return
+		return nil
 	}
 	var hashResp RPCResponse
 	if err := json.Unmarshal(hashData, &hashResp); err != nil {
 		fmt.Fprintf(os.Stderr, "[fetchBlock] hash unmarshal failed: %v\n", err)
-		return
+		return nil
 	}
 
 	var hash string
 	if err := json.Unmarshal(hashResp.Result, &hash); err != nil {
 		fmt.Fprintf(os.Stderr, "[fetchBlock] string unmarshal failed: %v\n", err)
-		return
+		return nil
 	}
 
 	blockData, err := bf.daemon.Call("getblock", []interface{}{hash, 2})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[fetchBlock] getblock failed for hash %s: %v\n", hash, err)
-		return
+		return nil
 	}
 
 	var blockResp RPCResponse
 	if err := json.Unmarshal(blockData, &blockResp); err != nil {
-		fmt.Fprintf(os.Stderr, "[fetchBlock] hash unmarshal failed: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "[fetchBlock] response unmarshal failed: %v\n", err)
+		return nil
 	}
-
 
 	var block chain.Block
 	if err := json.Unmarshal(blockResp.Result, &block); err != nil {
 		fmt.Fprintf(os.Stderr, "[fetchBlock] block unmarshal failed: %v\n", err)
-		return
+		return nil
 	}
 
-	//fmt.Printf("[fetchBlock] Raw block data: %s\n", string(blockData))
-	//fmt.Printf("[fetchBlock] Parsed block: %+v\n", block)
-
-	bf.out <- &block // 🧠 Send pointer, not the whole object
+	return &block
 }
+
 
 
 func main() {
