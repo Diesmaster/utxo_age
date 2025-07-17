@@ -9,11 +9,6 @@ import (
 	"utxo_cost/chain"// <-- this is the folder name
 )
 
-type ActiveUTXO struct {
-	Value        float64 // Value in BTC
-	CreatedHeight int    // The block height it was created at
-}
-
 type UsedUTXO struct {
 	Value        float64 // Value in BTC
 	CreatedHeight int    // The block height it was created at
@@ -24,7 +19,8 @@ type UsedUTXO struct {
 func main() {
 	config.PrintConfig()
 
-	utxos := make(map[string]ActiveUTXO)
+	utxos := NewActiveUTXOStore(11_000_000, "./utxo_disk_db")
+	defer utxos.Close()
 
 	daemon := node.NewBTCDaemon(
 		config.RPCURL,
@@ -45,7 +41,7 @@ func main() {
 	startTime := time.Now()
 	printInterval := 1000
 
-	for i := 0; i < 100000; i++ {
+	for i := 0; i < 950000; i++ {
 		block := <-blockChan
 
 		for _, tx := range block.Tx {
@@ -53,10 +49,10 @@ func main() {
 			// Handle VOUTs: create new UTXOs
 			for _, vout := range tx.Vout {
 				utxoKey := fmt.Sprintf("%s_%d", tx.TxID, vout.N)
-				utxos[utxoKey] = ActiveUTXO{
+				utxos.Add(utxoKey, ActiveUTXO{
 					Value:         vout.Value,
 					CreatedHeight: block.Height,
-				}
+				})
 			}
 
 			// Handle VINS: consume previous UTXOs
@@ -67,16 +63,17 @@ func main() {
 				}
 
 				utxoKey := fmt.Sprintf("%s_%d", vin.TxID, vin.Vout)
-				if utxo, ok := utxos[utxoKey]; ok {
-					delete(utxos, utxoKey)
-					usedChan <- UsedUTXO{
-						Value:         utxo.Value,
-						CreatedHeight: utxo.CreatedHeight,
-						UsedHeight:    block.Height,
+					if utxo, ok := utxos.Get(utxoKey); ok {
+						utxos.Delete(utxoKey)
+						usedChan <- UsedUTXO{
+							Value:         utxo.Value,
+							CreatedHeight: utxo.CreatedHeight,
+							UsedHeight:    block.Height,
+						}
 					}
+				}
 			}
-			}
-		}
+		
 		if i > 0 && i%printInterval == 0 {
 			elapsed := time.Since(startTime)
 			avgPerBlock := elapsed / time.Duration(printInterval)
@@ -88,7 +85,6 @@ func main() {
 		}
 	}
 	close(usedChan)
-	
 }
 
 
