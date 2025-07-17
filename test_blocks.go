@@ -19,7 +19,7 @@ type UsedUTXO struct {
 func main() {
 	config.PrintConfig()
 
-	utxos := NewActiveUTXOStore(11_000_000, "./utxo_disk_db")
+	utxos := NewActiveUTXOStore(4_000_000, "./utxo_disk_db")
 	defer utxos.Close()
 
 	daemon := node.NewBTCDaemon(
@@ -31,7 +31,7 @@ func main() {
 
 	usedChan := make(chan UsedUTXO, 10000)
 	StartUsedUTXOWriter("used_utxos.jsonl", usedChan, 1000, 3*time.Second)
-	blockChan := make(chan *chain.Block, 100)
+	blockChan := make(chan *chain.Block, 30)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

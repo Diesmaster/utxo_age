@@ -40,11 +40,13 @@ func (s *ActiveUTXOStore) Add(key string, utxo ActiveUTXO) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	REMOVAL_RATE := 0.90
+
 	s.mem[key] = utxo
 	s.order = append(s.order, key)
 
 	if len(s.mem) > s.threshold {
-		s.offloadOldest(0.3) // remove 30%
+		s.offloadOldest(REMOVAL_RATE) // remove 30%
 	}
 }
 
@@ -63,7 +65,8 @@ func (s *ActiveUTXOStore) Get(key string) (ActiveUTXO, bool) {
 			return err
 		}
 		return item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &utxo)
+			valCopy := append([]byte(nil), val...) // ✅ Safe copy
+			return json.Unmarshal(valCopy, &utxo)
 		})
 	})
 	if err == nil {
@@ -85,27 +88,44 @@ func (s *ActiveUTXOStore) offloadOldest(fraction float64) {
 		return
 	}
 	batch := s.order[:numToOffload]
-
-	err := s.db.Update(func(txn *badger.Txn) error {
-		for _, key := range batch {
-			if utxo, ok := s.mem[key]; ok {
-				data, err := json.Marshal(utxo)
-				if err != nil {
-					return err
-				}
-				if err := txn.Set([]byte(key), data); err != nil {
-					return err
-				}
-				delete(s.mem, key)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		fmt.Println("Error offloading to disk:", err)
-	}
-
 	s.order = s.order[numToOffload:]
+
+	const chunkSize = 10_000 // Number of entries per mini-batch
+	for i := 0; i < len(batch); i += chunkSize {
+		end := i + chunkSize
+		if end > len(batch) {
+			end = len(batch)
+		}
+		miniBatch := batch[i:end]
+
+		err := s.db.Update(func(txn *badger.Txn) error {
+			for _, key := range miniBatch {
+				if utxo, ok := s.mem[key]; ok {
+					data, err := json.Marshal(utxo)
+					if err != nil {
+						return err
+					}
+					if err := txn.Set([]byte(key), data); err != nil {
+						return err
+					}
+					delete(s.mem, key)
+				}
+			}
+			return nil
+		})
+
+		if err != nil {
+			fmt.Println("Error offloading to disk:", err)
+			break // Exit on failure
+		}
+
+		// Optional: Yield to allow other goroutines to run
+		// runtime.Gosched()
+		// Or, if you want to give breathing room:
+		// time.Sleep(10 * time.Millisecond)
+
+		fmt.Printf("[offload] Wrote %d UTXOs to disk (%d/%d)\n", len(miniBatch), end, len(batch))
+	}
 }
 
 func (s *ActiveUTXOStore) Len() int {

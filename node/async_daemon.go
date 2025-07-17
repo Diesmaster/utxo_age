@@ -115,50 +115,88 @@ func (bf *BlockFetcher) Run(ctx context.Context) {
 	var mu sync.Mutex
 	cond := sync.NewCond(&mu)
 	nextHeight := bf.startHeight
-
+	sem := make(chan struct{}, 15) // limit to 15 concurrent RPCs
 	// Worker goroutines
 	for i := 0; i < bf.concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for height := range tasks {
-				block := bf.fetchBlock(height)
+				// acquire RPC slot
+				sem <- struct{}{}
+
+				maxRetries := 3
+				var block *chain.Block
+				for retry := 0; retry < maxRetries; retry++ {
+					block = bf.fetchBlock(height)
+					if block != nil {
+						break
+					}
+					if retry == maxRetries-1 {
+						fmt.Fprintf(os.Stderr, "[worker] failed to fetch block at height %d after %d retries\n", height, maxRetries)
+					}
+				}
+
 				if block != nil {
 					mu.Lock()
 					pending[height] = block
-					cond.Signal() // notify waiter
+					cond.Signal()
 					mu.Unlock()
+					//fmt.Printf("Block: %d \n", height)
 				}
+				//fmt.Printf("Block: %d \n", height)
+				// release RPC slot
+				mu.Lock()
+				cond.Signal()
+				mu.Unlock()
+				<-sem
+				mu.Lock()
+				cond.Signal()
+				mu.Unlock()
+
 			}
 		}()
+		//fmt.Print("Worker exited")
 	}
 
 	// Dispatcher: ensures ordered delivery to bf.out
 	go func() {
+		mu.Lock()
+		defer mu.Unlock()
+
 		for {
-			mu.Lock()
-			for {
-				// Only proceed if next block is ready or context is done
-				if ctx.Err() != nil {
-					mu.Unlock()
-					return
-				}
-				if blk, ok := pending[nextHeight]; ok {
-					delete(pending, nextHeight)
-					bf.out <- blk
-					nextHeight++
-				} else {
-					break // wait until the next needed block is ready
-				}
+			// Wait until a block is ready or context is done
+			for ctx.Err() == nil && pending[nextHeight] == nil {
+				//fmt.Printf("[dispatcher] waiting for height %d...\n", nextHeight)
+				//fmt.Printf("[height feeder] waiting... pending has %d blocks\n", len(pending))
+				//fmt.Print("[height feeder] pending contains block heights: ")
+				//for h := range pending {
+				//	fmt.Printf("%d ", h)
+				//}
+				cond.Wait()
 			}
-			cond.Wait()
-			mu.Unlock()
+
+			// Context cancelled?
+			if ctx.Err() != nil {
+				//fmt.Println("[dispatcher] context cancelled, exiting")
+				return
+			}
+
+			// Process block if ready
+			blk := pending[nextHeight]
+			delete(pending, nextHeight)
+			bf.out <- blk
+			nextHeight++
+
+			// Optional: wake up others (like height feeder waiting on pending limit)
+			cond.Signal()
 		}
 	}()
 
 	// Feed heights to workers
 	go func() {
 		height := bf.startHeight
+		MAX_PEN := 40
 		for {
 			select {
 			case <-ctx.Done():
@@ -166,7 +204,18 @@ func (bf *BlockFetcher) Run(ctx context.Context) {
 				wg.Wait()
 				return
 			default:
+				mu.Lock()
+				for len(pending) >= MAX_PEN {
+					
+					//fmt.Printf("Next height: %d, Height: %d", nextHeight, height)
+					//fmt.Println()
+					cond.Wait()
+				}
+				
+				mu.Unlock()
+
 				tasks <- height
+
 				height++
 			}
 		}
