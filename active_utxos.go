@@ -6,6 +6,7 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	"log"
 	"sync"
+	"os"
 )
 
 type ActiveUTXOStore struct {
@@ -78,8 +79,18 @@ func (s *ActiveUTXOStore) Get(key string) (ActiveUTXO, bool) {
 func (s *ActiveUTXOStore) Delete(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.mem, key)
-	// Note: don't shrink order array for simplicity
+
+	if _, ok := s.mem[key]; ok {
+		delete(s.mem, key)
+	} else {
+		// Delete from disk
+		err := s.db.Update(func(txn *badger.Txn) error {
+			return txn.Delete([]byte(key))
+		})
+		if err != nil && err != badger.ErrKeyNotFound {
+			fmt.Fprintf(os.Stderr, "[Delete] Failed to delete key %s from disk: %v\n", key, err)
+		}
+	}
 }
 
 func (s *ActiveUTXOStore) offloadOldest(fraction float64) {
