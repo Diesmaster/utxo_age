@@ -9,17 +9,17 @@ import (
 	"utxo_cost/chain"// <-- this is the folder name
 )
 
-type UsedUTXO struct {
-	Value        float64 // Value in BTC
-	CreatedHeight int    // The block height it was created at
-	UsedHeight int
-}
 
+type UsedUTXO struct {
+	Value         float64 `parquet:"name=value, type=DOUBLE"`
+	CreatedHeight int     `parquet:"name=created_height, type=INT32"`
+	UsedHeight    int     `parquet:"name=used_height, type=INT32"`
+}
 
 func main() {
 	config.PrintConfig()
 
-	utxos := NewActiveUTXOStore(4_000_000, "./utxo_disk_db")
+	utxos := NewActiveUTXOStore(11_000_000, "./utxo_disk_db")
 	defer utxos.Close()
 
 	daemon := node.NewBTCDaemon(
@@ -30,7 +30,7 @@ func main() {
 	)
 
 	usedChan := make(chan UsedUTXO, 10000)
-	StartUsedUTXOWriter("used_utxos.jsonl", usedChan, 1000, 3*time.Second)
+	StartUsedUTXOWriterParquet("used_utxos.parquet", usedChan, 1000, 3*time.Second)
 	blockChan := make(chan *chain.Block, 30)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

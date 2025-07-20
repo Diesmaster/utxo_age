@@ -41,13 +41,18 @@ func (s *ActiveUTXOStore) Add(key string, utxo ActiveUTXO) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	REMOVAL_RATE := 0.90
+	REMOVAL_RATE_MEM := 0.90
+	REMOVAL_RATE_ARR := 0.6
 
 	s.mem[key] = utxo
 	s.order = append(s.order, key)
 
 	if len(s.mem) > s.threshold {
-		s.offloadOldest(REMOVAL_RATE) // remove 30%
+		s.offloadOldest(REMOVAL_RATE_MEM) // remove 30%
+	}
+
+	if len(s.order) > s.threshold*2 {
+		s.offloadOldest(REMOVAL_RATE_ARR)
 	}
 }
 

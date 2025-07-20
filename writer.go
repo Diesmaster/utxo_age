@@ -1,44 +1,54 @@
 package main
 
 import (
-	"encoding/json"
-	"os"
 	"time"
+
+	"github.com/xitongsys/parquet-go-source/local"
+	"github.com/xitongsys/parquet-go/writer"
+	"github.com/xitongsys/parquet-go/parquet"
 )
 
-func StartUsedUTXOWriter(filePath string, input <-chan UsedUTXO, flushSize int, flushInterval time.Duration) {
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+func StartUsedUTXOWriterParquet(filePath string, input <-chan UsedUTXO, flushSize int, flushInterval time.Duration) {
+	fw, err := local.NewLocalFileWriter(filePath)
 	if err != nil {
-		panic("failed to open UTXO log file: " + err.Error())
+		panic("failed to open Parquet file: " + err.Error())
 	}
-	encoder := json.NewEncoder(file)
+
+	pw, err := writer.NewParquetWriter(fw, new(UsedUTXO), 4)
+	if err != nil {
+		panic("failed to create Parquet writer: " + err.Error())
+	}
+	pw.CompressionType = parquet.CompressionCodec_SNAPPY
+
 	buffer := make([]UsedUTXO, 0, flushSize)
 	ticker := time.NewTicker(flushInterval)
 
 	go func() {
-		defer file.Close()
+		defer func() {
+			for _, item := range buffer {
+				_ = pw.Write(item)
+			}
+			_ = pw.WriteStop()
+			_ = fw.Close()
+		}()
+
 		for {
 			select {
 			case utxo, ok := <-input:
 				if !ok {
-					// Channel closed, flush final data
-					for _, item := range buffer {
-						_ = encoder.Encode(item)
-					}
 					return
 				}
 				buffer = append(buffer, utxo)
 				if len(buffer) >= flushSize {
 					for _, item := range buffer {
-						_ = encoder.Encode(item)
+						_ = pw.Write(item)
 					}
 					buffer = buffer[:0]
 				}
-
 			case <-ticker.C:
 				if len(buffer) > 0 {
 					for _, item := range buffer {
-						_ = encoder.Encode(item)
+						_ = pw.Write(item)
 					}
 					buffer = buffer[:0]
 				}
