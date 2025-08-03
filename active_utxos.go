@@ -7,6 +7,7 @@ import (
 	"log"
 	"sync"
 	"os"
+	"runtime"
 )
 
 type ActiveUTXOStore struct {
@@ -142,6 +143,7 @@ func (s *ActiveUTXOStore) offloadOldest(fraction float64) {
 
 		fmt.Printf("[offload] Wrote %d UTXOs to disk (%d/%d)\n", len(miniBatch), end, len(batch))
 	}
+	runtime.GC()
 }
 
 func (s *ActiveUTXOStore) Len() int {

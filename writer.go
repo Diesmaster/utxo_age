@@ -1,14 +1,15 @@
 package main
 
 import (
+	"sync"
 	"time"
 
 	"github.com/xitongsys/parquet-go-source/local"
-	"github.com/xitongsys/parquet-go/writer"
 	"github.com/xitongsys/parquet-go/parquet"
+	"github.com/xitongsys/parquet-go/writer"
 )
 
-func StartUsedUTXOWriterParquet(filePath string, input <-chan UsedUTXO, flushSize int, flushInterval time.Duration) {
+func StartUsedUTXOWriterParquet(filePath string, input <-chan UsedUTXO, flushSize int, flushInterval time.Duration, wg *sync.WaitGroup) {
 	fw, err := local.NewLocalFileWriter(filePath)
 	if err != nil {
 		panic("failed to open Parquet file: " + err.Error())
@@ -23,7 +24,10 @@ func StartUsedUTXOWriterParquet(filePath string, input <-chan UsedUTXO, flushSiz
 	buffer := make([]UsedUTXO, 0, flushSize)
 	ticker := time.NewTicker(flushInterval)
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+		defer ticker.Stop()
 		defer func() {
 			for _, item := range buffer {
 				_ = pw.Write(item)
@@ -36,7 +40,7 @@ func StartUsedUTXOWriterParquet(filePath string, input <-chan UsedUTXO, flushSiz
 			select {
 			case utxo, ok := <-input:
 				if !ok {
-					return
+					return // graceful exit on channel close
 				}
 				buffer = append(buffer, utxo)
 				if len(buffer) >= flushSize {

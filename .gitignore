@@ -2,3 +2,4 @@ used_utxos.jsonl
 used_utxos.parquet
 .git/
 utxo_disk_db/
+used_utxos.parquet

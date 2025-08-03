@@ -196,7 +196,7 @@ func (bf *BlockFetcher) Run(ctx context.Context) {
 	// Feed heights to workers
 	go func() {
 		height := bf.startHeight
-		MAX_PEN := 40
+		MAX_PEN := 10
 		for {
 			select {
 			case <-ctx.Done():
